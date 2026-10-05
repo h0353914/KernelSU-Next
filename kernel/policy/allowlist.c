@@ -442,7 +442,17 @@ static void do_persistent_allow_list(struct callback_head *_cb)
     loff_t off = 0;
     int i;
 
-    const struct cred *saved = override_creds(ksu_cred);
+    /*
+     * Write the file in the ksu domain, but on top of a copy of the caller's
+     * (init's) credentials rather than ksu_cred itself. ksu_cred is created at
+     * module init and has no session keyring, so with file-based encryption
+     * opening a file under /data/adb fails with -ENOKEY (-126) unless its
+     * crypto info is already cached, and the allowlist is silently lost.
+     */
+    struct cred *save_cred = prepare_creds();
+    if (save_cred)
+        setup_selinux(KERNEL_SU_CONTEXT, save_cred);
+    const struct cred *saved = override_creds(save_cred ? save_cred : ksu_cred);
     struct file *fp =
         filp_open(KERNEL_SU_ALLOWLIST, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (IS_ERR(fp)) {
@@ -487,6 +497,8 @@ close_file:
     filp_close(fp, 0);
 out:
     revert_creds(saved);
+    if (save_cred)
+        put_cred(save_cred);
     kfree(_cb);
 }
 
